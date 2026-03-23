@@ -1,0 +1,126 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: '11076708'
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Add Android platform
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          else
+            echo "Android platform already present"
+          fi
+
+      - name: Sync Capacitor
+        run: npx cap sync android
+
+      - name: Copy icons, adaptive XMLs and splash
+        run: |
+          RES="android/app/src/main/res"
+
+          # mipmap PNGs
+          for dir in mipmap-mdpi mipmap-hdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
+            DEST="$RES/$dir"
+            SRC="android-icons/$dir"
+            mkdir -p "$DEST"
+            cp "$SRC/ic_launcher.png"            "$DEST/ic_launcher.png"
+            cp "$SRC/ic_launcher_round.png"      "$DEST/ic_launcher_round.png"
+            # Usa a arte final completa no foreground adaptativo para evitar o icone branco no APK
+            cp "$SRC/ic_launcher.png"            "$DEST/ic_launcher_foreground.png"
+            echo "  $dir OK"
+          done
+
+          # Adaptive icon XMLs (Android 8+)
+          mkdir -p "$RES/mipmap-anydpi-v26"
+          cp android-icons/mipmap-anydpi-v26/ic_launcher.xml       "$RES/mipmap-anydpi-v26/ic_launcher.xml"
+          cp android-icons/mipmap-anydpi-v26/ic_launcher_round.xml  "$RES/mipmap-anydpi-v26/ic_launcher_round.xml"
+          echo "  mipmap-anydpi-v26 OK"
+
+          # Background color resource
+          mkdir -p "$RES/values"
+          # Merge or create — if ic_launcher_background.xml doesn't exist in values, copy it
+          cp android-icons/values/ic_launcher_background.xml "$RES/values/ic_launcher_background.xml"
+          echo "  values/ic_launcher_background.xml OK"
+
+          # Splash
+          mkdir -p "$RES/drawable"
+          cp android-icons/splash.png "$RES/drawable/splash.png"
+          echo "  splash OK"
+
+          echo "All assets copied!"
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Show environment info
+        working-directory: android
+        run: |
+          ./gradlew --version --no-daemon
+          echo "ANDROID_HOME=$ANDROID_HOME"
+
+      - name: Build Debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+
+      - name: Upload Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: JFynzo-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
+
+      - name: Build Release APK (unsigned)
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon --stacktrace
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+
+      - name: Upload Release APK (unsigned)
+        uses: actions/upload-artifact@v4
+        with:
+          name: JFynzo-release-unsigned
+          path: android/app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 30
